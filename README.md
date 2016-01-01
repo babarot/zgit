@@ -4,10 +4,6 @@
 
 ## Installation
 
-***Requirements***
-
-- [`fzf`](https://github.com/junegunn/fzf)
-
 By using [zplug](https://github.com/b4b4r07/zplug), you can easily install zgit and fzf.
 
 ```zsh
@@ -20,10 +16,32 @@ zplug "junegunn/fzf-bin", \
     of:bin
 ```
 
+***Requirements***
+
+- [`fzf`](https://github.com/junegunn/fzf)
+
+***Desirable***
+
+- `tmux` (for `fzf-tmux`)
+- `ghq` (to find `git` repositories)
+
 ## Usage
 
 ```console
-$ zgit    # in git repository
+$ zgit
+```
+
+### Configuration
+
+```gitconfig
+[zgit "core"]
+    action      = status
+    fzf_options = "--cycle --multi"
+    
+[zgit "keybind"]
+    add    = ctrl-a
+    commit = ctrl-c
+    diff   = ctrl-d
 ```
 
 ## License
