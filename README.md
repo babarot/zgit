@@ -1,6 +1,6 @@
 # zgit
 
-**[WIP]** zgit is simple tig-like git client
+zgit is simple git interface.
 
 ## Installation
 
@@ -27,22 +27,38 @@ zplug "junegunn/fzf-bin", \
 
 ## Usage
 
+All you have to do is typing `zgit` on your command line.
+
 ```console
 $ zgit
 ```
 
-### Configuration
+When `zgit` command is executed outside git repository, it find the git repository using the [`ghq`](https://github.com/motemen/ghq) or [`enhancd`](https://github.com/b4b4r07/enhancd). In order to combine, you should write `tool = ghq` or `tool = enhancd` to `gitconfig` file. For more details, see also next section.
 
-```gitconfig
+## Configurations
+
+You can write the configuration to `~/.gitconfig`.
+
+```toml
 [zgit "core"]
-    action      = status
-    fzf_options = "--cycle --multi"
-    
-[zgit "keybind"]
-    add    = ctrl-a
-    commit = ctrl-c
-    diff   = ctrl-d
+    default  = "status"
+    tool     = "enhancd"
+    lessopen = "| pygmentize -O style=solarized -f console256 -g %s"
+
+[zgit "command"]
+    echo   = "ctrl-e"
+    add    = "ctrl-a"
+    add-p  = "alt-a"
+    commit = "ctrl-c"
+    diff   = "ctrl-d"
+
+[zgit "action"]
+   select-all = "ctrl-z"
 ```
+
+## Notes
+
+Work in progress.
 
 ## License
 
