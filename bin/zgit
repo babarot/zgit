@@ -1,0 +1,471 @@
+#!/bin/zsh
+
+export FZF_DEFAULT_OPTS=
+export LESS="$(git config --get zgit.core.less)"
+export LESSOPEN="$(git config --get zgit.core.lessopen)"
+
+z_echo="$(git config --get zgit.keybind.echo)"
+z_add="$(git config --get zgit.keybind.add)"
+z_add_p="$(git config --get zgit.keybind.add-p)"
+z_commit="$(git config --get zgit.keybind.commit)"
+z_diff="$(git config --get zgit.keybind.diff)"
+z_reset="$(git config --get zgit.keybind.reset)"
+z_core_action="$(git config --get zgit.core.action)"
+
+# general {{{1
+die() {
+    builtin printf -- "$@" >&2
+    exit 1
+}
+
+put() {
+    builtin printf -- "$@"
+}
+
+ink() {
+    local color tty=1 is_bold=false
+    local -a text
+
+    while (( $# > 0 )); do
+        case "$1" in
+            --color)
+                if [[ ! $2 =~ ^(black|blue|cyan|default|green|grey|magenta|red|white|yellow)$ ]]; then
+                    die "$2: must be a color\n"
+                    return 1
+                fi
+                color="$2"; shift
+                ;;
+            --bold)
+                is_bold=true
+                ;;
+            --tty)
+                if [[ $2 != <-> ]]; then
+                    die "$2: must be an interger\n"
+                    return 1
+                fi
+                tty="$2"; shift
+                ;;
+            *)
+                text+=("$1")
+                ;;
+        esac
+        shift
+    done
+
+    if $is_bold; then
+        color="$fg_bold[$color]"
+    else
+        color="$fg_no_bold[$color]"
+    fi
+
+    case $tty in
+        1)
+            put "${color}${text}${reset_color}"
+            ;;
+        2)
+            die "${color}${text}${reset_color}"
+            ;;
+    esac
+}
+
+log() {
+    local state text
+    state="$1"
+    text="zgit: $2"
+
+    local bold tty=1
+
+    case "$state" in
+        TITLE)
+            color="yellow"
+            ;;
+        INFO)
+            color="blue"
+            ;;
+        FAIL | WARN)
+            color="red"
+            tty=2
+            ;;
+        ERROR)
+            color="red"
+            bold="--bold"
+            tty=2
+            ;;
+        PASS)
+            color="green"
+            ;;
+        SUCCESS)
+            bold="--bold"
+            color="green"
+            ;;
+        *)
+            text="$1"
+            ;;
+    esac
+
+    ink --color white "["
+    ink --color magenta --bold "$(date +%H:%M:%S)"
+    ink --color white "]"
+    ink --color "$color" --tty "$tty" $bold " $text"
+}
+
+available() {
+    local item x
+
+    for item in "${(s.:.)1}"
+    do
+        x="${item%% *}"
+        # Check if x is available
+        if (( $+commands[$x] )); then
+            echo "$x"
+            return 0
+        else
+            continue
+        fi
+    done
+
+    return 1
+}
+
+in_array(){
+    local -a arr
+    local needle="$1"
+    shift
+
+    arr=( "$@" )
+    (( $arr[(i)$needle] != ${#arr} + 1 ))
+}
+
+order_fixed() {
+    awk '
+    {
+        line[NR] = $0;
+    }
+
+    END {
+        merge_sort(line, 1, NR, 2);
+        for (i = 1; i <= NR; i++) {
+            print line[i];
+        }
+    }
+
+    function merge_sort(arr, a, b, key,   k) {
+        if (a < b) {
+            k = int((a + b) / 2);
+            merge_sort(arr, a, k, key);
+            merge_sort(arr, k + 1, b, key);
+            merge(arr, a, k, b, key);
+        }
+    }
+
+    function merge(arr, a, k, b, key,   i, j, p, c) {
+        j = i = a;
+        p = k + 1;
+        while (a <= k && p <= b) {
+            split(arr[a], arr_key1);
+            split(arr[p], arr_key2);
+            if (arr_key1[key] <= arr_key2[key]) {
+                c[i++] = arr[a++];
+            } else {
+                c[i++] = arr[p++];
+            }
+        }
+        while (a <= k) {
+            c[i++] = arr[a++];
+        }
+        while (p <= b) {
+            c[i++] = arr[p++];
+        }
+        while (j <= b) {
+            arr[j] = c[j];
+            j++;
+        }
+    }'
+}
+
+ask() {
+    local ans ret stdin
+
+    ans=("YES" "NO")
+    if [[ -p /dev/stdin ]]; then
+        stdin="\n\n$(cat <&0)"
+    fi
+    ret=( ${(@f)"$(echo "${(F)ans[@]}\n$stdin" | fzf-tmux --ansi)"} )
+
+    (( $#ret == 1 )) || return 1
+    if [[ $ret[1] =~ YES ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+enhancd_log() {
+    local line
+
+    while read line
+    do
+        if [[ -e $line/.git ]]; then
+            echo $line
+        fi
+    done <"$ENHANCD_LOG"
+}
+
+# git {{{1
+is_git_repo() {
+    git rev-parse --is-inside-work-tree &>/dev/null
+}
+
+git_subcommands() {
+    local k
+    local -A subcommands
+
+    subcommands=(
+    "add"        "Add file contents to the index"
+    "bisect"     "Find by binary search the change that introduced a bug"
+    "branch"     "List, create, or delete branches"
+    "checkout"   "Checkout a branch or paths to the working tree"
+    "clone"      "Clone a repository into a new directory"
+    "commit"     "Record changes to the repository"
+    "diff"       "Show changes between commits, commit and working tree, etc"
+    "fetch"      "Download objects and refs from another repository"
+    "grep"       "Print lines matching a pattern"
+    "init"       "Create an empty Git repository or reinitialize an existing one"
+    "log"        "Show commit logs"
+    "merge"      "Join two or more development histories together"
+    "mv"         "Move or rename a file, a directory, or a symlink"
+    "pull"       "Fetch from and integrate with another repository or a local branch"
+    "push"       "Update remote refs along with associated objects"
+    "rebase"     "Forward-port local commits to the updated upstream head"
+    "reset"      "Reset current HEAD to the specified state"
+    "rm"         "Remove files from the working tree and from the index"
+    "show"       "Show various types of objects"
+    "status"     "Show the working tree status"
+    "tag"        "Create, list, delete or verify a tag object signed with GPG"
+    )
+
+    for k in ${(k)subcommands}
+    do
+        put "$fg[red]%-10s$reset_color %s\n" "$k" "$subcommands[$k]"
+    done | fzf-tmux --ansi
+}
+
+git_action() {
+    local action action_command
+    action="${1:-$z_core_action}"
+
+    case "$action" in
+        branch)
+            action_command="git branch"
+            ;;
+        status)
+            action_command="git -c color.ui=always status --short --branch"
+            ;;
+        "")
+            :
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    echo "$action_command"
+}
+
+not_git_repo() {
+    local tool cmd
+    local -a repos
+    tool="$(git config --get zgit.core.tool)"
+
+    case "$tool" in
+        enhancd)
+            [[ -f $ENHANCD_LOG ]] || die "$ENHANCD_LOG: not found\n"
+            cmd="enhancd_log"
+            ;;
+        ghq)
+            (( $+commands[ghq] )) || die "ghq: not found\n"
+            cmd="ghq list --full-path"
+            ;;
+        "")
+            die "not git repo\n"
+            ;;
+        *)
+            die "$tool: invalid tool\n"
+            ;;
+    esac
+    repos=( "${(@f)"$(eval "$cmd" | fzf-tmux --tac)"}" )
+
+    if (( $#repos == 0 )); then
+        return 1
+    fi
+    builtin cd "$repos[1]"
+    is_git_repo || die "not git repo\n"
+}
+
+get_modified_files() {
+    local -a files
+    files=( ${(@f)"$(git -c pager.diff=false diff --name-only)"} )
+    print -l "${files[@]}"
+}
+
+get_staged_files() {
+    local -a files
+    files=( ${(@f)"$(git -c pager.diff=false diff --name-only --cached)"} )
+    print -l "${files[@]}"
+}
+
+get_untracked_files() {
+    local -a files
+    files=( ${(@f)"$(git ls-files --others --exclude-standard)"} )
+    print -l "${files[@]}"
+}
+
+get_diff_files() {
+    local -a files
+    files=( ${(@f)"$(git -c pager.diff=false diff --name-only)"} )
+    print -l "${files[@]}"
+}
+
+is_modified_file() {
+    local -a files
+    files=( ${(@f)"$(get_modified_files)"} )
+    (( $files[(I)$1] ))
+}
+
+is_staged_file() {
+    local -a files
+    files=( ${(@f)"$(get_staged_files)"} )
+    (( $files[(I)$1] ))
+}
+
+is_staged() {
+    local -a files
+    files=( ${(@f)"$(get_staged_files)"} )
+    (( $#files > 0 ))
+}
+
+is_untracked_file() {
+    local -a files
+    files=( ${(@f)"$(get_untracked_files)"} )
+    (( $files[(I)$1] ))
+}
+
+is_diff_file() {
+    local -a files
+    files=( ${(@f)"$(get_diff_files)"} )
+    (( $files[(I)$1] ))
+}
+
+# main {{{1
+main() {
+    local git_repo
+    local cmd q k res
+    local action f git_cmd
+    local -a files
+
+    if [[ -d $1 ]]; then
+        git_repo="$1"
+    else
+        git_repo="${1:h}"
+    fi
+    builtin cd "$git_repo"
+    is_git_repo || not_git_repo || return 0
+
+    log TITLE "Enter $fg[blue]$PWD$reset_color\n"
+    while cmd="$(
+        eval "$(git_action $action)" \
+            | sed -e '/^$/d;s/"//g' | order_fixed \
+            | fzf-tmux --ansi --multi --tac --query="$q" \
+            --no-sort --exit-0 --prompt="zgit> " \
+            --print-query --expect=$z_add,$z_commit,$z_diff,$z_echo,$z_reset,$z_add_p \
+            )"; do
+        q="$(head -1 <<<"$cmd")"
+        k="$(head -2 <<<"$cmd" | tail -1)"
+        res="$(sed '1,2d;/^$/d;/^#/d' <<<"$cmd")"
+        [[ -z $res ]] && continue
+        files=( "${(@f)"$(cut -c4- <<<"$res")"}" )
+        case "$k" in
+            invalid_keybind)
+                case "${action:-$z_core_action}" in
+                    branch)
+                        action="status"
+                        ;;
+                    status)
+                        action="branch"
+                        ;;
+                esac
+                ;;
+            $z_reset)
+                for f in "${files[@]}"
+                do
+                    if is_modified_file "$f"; then
+                        git checkout "$f"
+                    fi
+                done
+                ;;
+            $z_echo)
+                echo "${files[@]}"
+                continue
+                ;;
+            $z_add_p)
+                add_option="-p"
+                ;&
+            $z_add)
+                for f in "${files[@]}"
+                do
+                    if is_untracked_file "$f" || is_modified_file "$f"; then
+                        git add $add_option "$f"
+                    else
+                        git reset HEAD "$f" &>/dev/null
+                    fi
+                done
+                continue
+                ;;
+            $z_diff)
+                for f in "${files[@]}"
+                do
+                    if is_diff_file "$f"; then
+                        git diff --color=always -- "$f"
+                    elif is_staged_file "$f"; then
+                        git diff --color=always --cached -- "$f"
+                    else
+                        less -R "$f"
+                    fi
+                done
+                continue
+                ;;
+            $z_commit)
+                if is_staged; then
+                    if echo "$fg[blue]Commit?$reset_color ${(qq@f)"$(get_staged_files)"}" | ask; then
+                        git commit
+                    fi
+                else
+                    if echo "$fg[blue]Commit?$reset_color ${(qq)files[@]}" | ask; then
+                        git add "${files[@]}"
+                        git commit
+                    fi
+                fi
+                ;;
+            *)
+                (( $#files == 0 )) && continue
+                git_cmd="$(git_subcommands | awk '{print $1}')"
+                if [[ -z $git_cmd ]]; then
+                    continue
+                else
+                    git "$git_cmd" "${files[@]}"
+                    break
+                fi
+                ;;
+        esac
+    done
+
+    TRAPEXIT() {
+        log TITLE "Bye \U1F44B\n"
+    }
+}
+
+autoload -Uz colors
+colors
+main "$@"
+
+# vim: foldmethod=marker foldcolumn=3 foldlevel=0
